@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   getAcademicControlStore,
+  resolveAcademicAttachmentUrl,
   resolveExamStatus,
   subscribeAcademicControl,
   type AcademicAttachment,
@@ -45,6 +46,31 @@ function formatDate(value: string) {
   });
 }
 
+async function createOpenableAttachmentUrl(attachment: AcademicAttachment) {
+  const resolvedUrl = await resolveAcademicAttachmentUrl(attachment);
+
+  if (!resolvedUrl) {
+    return null;
+  }
+
+  if (!resolvedUrl.startsWith("data:")) {
+    return resolvedUrl;
+  }
+
+  const response = await fetch(resolvedUrl);
+  const blob = await response.blob();
+  return URL.createObjectURL(blob);
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 function AttachmentOpenButton({
   attachment,
   compact = false,
@@ -52,7 +78,10 @@ function AttachmentOpenButton({
   attachment: AcademicAttachment;
   compact?: boolean;
 }) {
-  if (!attachment.dataUrl) {
+  const [isOpening, setIsOpening] = useState(false);
+  const [openError, setOpenError] = useState<string | null>(null);
+
+  if (!attachment.dataUrl && !attachment.storageKey) {
     return (
       <span className="text-xs text-amber-600">
         Re-upload required to open this file
@@ -60,20 +89,124 @@ function AttachmentOpenButton({
     );
   }
 
+  const handleOpen = async () => {
+    setIsOpening(true);
+    setOpenError(null);
+
+    const popup = window.open("", "_blank");
+
+    if (popup) {
+      popup.document.write(
+        "<!doctype html><title>Opening file...</title><p style='font-family:Segoe UI,Arial,sans-serif;padding:24px'>Opening file...</p>",
+      );
+      popup.document.close();
+    }
+
+    try {
+      const url = await createOpenableAttachmentUrl(attachment);
+
+      if (!url) {
+        if (popup) {
+          popup.close();
+        }
+        setOpenError("Re-upload required to open this file");
+        return;
+      }
+
+      if (popup) {
+        popup.document.open();
+        popup.document.write(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>${escapeHtml(attachment.name)}</title>
+    <style>
+      body { margin: 0; font-family: Segoe UI, Arial, sans-serif; background: #f8fafc; color: #0f172a; }
+      .shell { display: flex; flex-direction: column; min-height: 100vh; }
+      .header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px; background: white; border-bottom: 1px solid #e2e8f0; }
+      .title { font-size: 14px; font-weight: 600; }
+      .meta { font-size: 12px; color: #64748b; margin-top: 4px; }
+      .actions { display: flex; gap: 10px; }
+      .action { display: inline-flex; align-items: center; justify-content: center; padding: 10px 14px; border-radius: 10px; background: #0f766e; color: white; text-decoration: none; font-size: 12px; font-weight: 600; }
+      .viewer-wrap { flex: 1; padding: 16px; }
+      .viewer { width: 100%; height: calc(100vh - 100px); border: 1px solid #cbd5e1; border-radius: 16px; background: white; }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="header">
+        <div>
+          <div class="title">${escapeHtml(attachment.name)}</div>
+          <div class="meta">${escapeHtml(attachment.typeLabel)} file • ${escapeHtml(attachment.sizeLabel)}</div>
+        </div>
+        <div class="actions">
+          <a class="action" id="open-direct" href="#" target="_blank" rel="noreferrer">Open in new tab</a>
+        </div>
+      </div>
+      <div class="viewer-wrap">
+        <iframe id="attachment-frame" class="viewer" title="${escapeHtml(attachment.name)}"></iframe>
+      </div>
+    </div>
+  </body>
+</html>`);
+        popup.document.close();
+
+        const frame = popup.document.getElementById(
+          "attachment-frame",
+        ) as HTMLIFrameElement | null;
+        const openDirectLink = popup.document.getElementById(
+          "open-direct",
+        ) as HTMLAnchorElement | null;
+
+        if (frame) {
+          frame.src = url;
+        }
+        if (openDirectLink) {
+          openDirectLink.href = url;
+        }
+      } else {
+        window.location.assign(url);
+      }
+
+      if (url.startsWith("blob:")) {
+        popup?.addEventListener(
+          "beforeunload",
+          () => {
+            URL.revokeObjectURL(url);
+          },
+          { once: true },
+        );
+        window.setTimeout(() => {
+          URL.revokeObjectURL(url);
+        }, 5 * 60 * 1000);
+      }
+    } catch (_error) {
+      if (popup) {
+        popup.close();
+      }
+      setOpenError("Unable to open this file right now");
+    } finally {
+      setIsOpening(false);
+    }
+  };
+
   return (
-    <a href={attachment.dataUrl} target="_blank" rel="noreferrer">
+    <div className="flex flex-col items-end gap-1">
       <Button
         type="button"
         variant="outline"
+        disabled={isOpening}
+        onClick={() => void handleOpen()}
         className={
           compact
             ? "h-8 rounded-xl border-slate-200 px-3 text-xs text-slate-700"
             : "h-9 rounded-xl border-slate-200 px-4 text-sm text-slate-700"
         }
       >
-        Open file
+        {isOpening ? "Opening..." : "Open file"}
       </Button>
-    </a>
+      {openError && <span className="text-xs text-amber-600">{openError}</span>}
+    </div>
   );
 }
 

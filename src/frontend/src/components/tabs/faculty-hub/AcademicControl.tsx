@@ -449,17 +449,27 @@ export default function AcademicControl() {
     });
   };
 
-  const handleGenerateReportCard = () => {
-    const reportCard = generateReportCard({
-      studentName: reportStudent,
-      branch: reportBranch,
-      semester: reportSemester,
-      remarks: reportRemarks.trim(),
-    });
-    setReportFeedback({
-      tone: "success",
-      message: `${reportCard.studentName}'s report card has been generated and delivered to the Student Updates section.`,
-    });
+  const handleGenerateReportCard = async () => {
+    try {
+      const reportCard = await generateReportCard({
+        studentName: reportStudent,
+        branch: reportBranch,
+        semester: reportSemester,
+        remarks: reportRemarks.trim(),
+      });
+      setReportFeedback({
+        tone: "success",
+        message: `${reportCard.studentName}'s report card has been generated and delivered to the Student Updates section.`,
+      });
+    } catch (error) {
+      setReportFeedback({
+        tone: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Report card generation failed. Try again.",
+      });
+    }
   };
 
   const handleSendNotification = async () => {

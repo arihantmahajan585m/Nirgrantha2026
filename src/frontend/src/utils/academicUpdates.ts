@@ -14,6 +14,7 @@ export interface AcademicAttachment {
   typeLabel: string;
   mimeType: string;
   dataUrl: string | null;
+  storageKey?: string | null;
   uploadedAt: string;
 }
 
@@ -138,6 +139,15 @@ interface SaveExamInput {
 
 const STORAGE_KEY = "nirgrantha.academic.control";
 const STORE_EVENT = "nirgrantha:academic-control-updated";
+const ATTACHMENT_DB_NAME = "nirgrantha-academic-attachments";
+const ATTACHMENT_STORE_NAME = "attachments";
+const INLINE_ATTACHMENT_SIZE_LIMIT = 150_000;
+
+interface StoredAcademicAttachmentPayload {
+  dataUrl: string;
+  mimeType: string;
+  savedAt: string;
+}
 
 const DEFAULT_EXAMS: TrackedExamRecord[] = [
   {
@@ -220,14 +230,20 @@ function createAttachment(
   typeLabel: string,
   mimeType: string,
   dataUrl: string | null,
+  options?: {
+    id?: string;
+    storageKey?: string | null;
+  },
 ) {
+  const attachmentId = options?.id ?? createId("attachment");
   return {
-    id: createId("attachment"),
+    id: attachmentId,
     name,
     sizeLabel,
     typeLabel,
     mimeType,
     dataUrl,
+    storageKey: options?.storageKey ?? null,
     uploadedAt: new Date().toISOString(),
   } satisfies AcademicAttachment;
 }
@@ -242,14 +258,156 @@ function readFileAsDataUrl(file: File) {
   });
 }
 
+function canUseIndexedDb() {
+  return isBrowser() && typeof window.indexedDB !== "undefined";
+}
+
+function openAcademicAttachmentDb() {
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    if (!canUseIndexedDb()) {
+      reject(new Error("IndexedDB is unavailable in this browser."));
+      return;
+    }
+
+    const request = window.indexedDB.open(ATTACHMENT_DB_NAME, 1);
+
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(ATTACHMENT_STORE_NAME)) {
+        db.createObjectStore(ATTACHMENT_STORE_NAME);
+      }
+    };
+
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () =>
+      reject(
+        request.error ??
+          new Error("Unable to open the academic attachment store."),
+      );
+  });
+}
+
+async function writeAttachmentPayload(
+  storageKey: string,
+  dataUrl: string,
+  mimeType: string,
+) {
+  const db = await openAcademicAttachmentDb();
+
+  return new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(ATTACHMENT_STORE_NAME, "readwrite");
+    transaction.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    transaction.onerror = () => {
+      db.close();
+      reject(
+        transaction.error ??
+          new Error("Unable to save the academic attachment payload."),
+      );
+    };
+
+    const store = transaction.objectStore(ATTACHMENT_STORE_NAME);
+    store.put(
+      {
+        dataUrl,
+        mimeType,
+        savedAt: new Date().toISOString(),
+      } satisfies StoredAcademicAttachmentPayload,
+      storageKey,
+    );
+  });
+}
+
+async function readAttachmentPayload(storageKey: string) {
+  const db = await openAcademicAttachmentDb();
+
+  return new Promise<string | null>((resolve, reject) => {
+    const transaction = db.transaction(ATTACHMENT_STORE_NAME, "readonly");
+    const store = transaction.objectStore(ATTACHMENT_STORE_NAME);
+    const request = store.get(storageKey);
+
+    request.onsuccess = () => {
+      const record = request.result as StoredAcademicAttachmentPayload | undefined;
+      resolve(record?.dataUrl ?? null);
+    };
+    request.onerror = () =>
+      reject(
+        request.error ??
+          new Error("Unable to read the academic attachment payload."),
+      );
+    transaction.oncomplete = () => db.close();
+    transaction.onerror = () => {
+      db.close();
+      reject(
+        transaction.error ??
+          new Error("Unable to read the academic attachment payload."),
+      );
+    };
+  });
+}
+
+async function deleteAttachmentPayload(storageKey: string) {
+  const db = await openAcademicAttachmentDb();
+
+  return new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(ATTACHMENT_STORE_NAME, "readwrite");
+    transaction.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    transaction.onerror = () => {
+      db.close();
+      reject(
+        transaction.error ??
+          new Error("Unable to delete the academic attachment payload."),
+      );
+    };
+
+    const store = transaction.objectStore(ATTACHMENT_STORE_NAME);
+    store.delete(storageKey);
+  });
+}
+
+async function moveAttachmentPayloadOutOfLocalStorage(
+  attachment: AcademicAttachment,
+) {
+  if (!attachment.dataUrl) {
+    return attachment;
+  }
+
+  const storageKey = attachment.storageKey ?? attachment.id;
+
+  if (!canUseIndexedDb()) {
+    if (attachment.dataUrl.length <= INLINE_ATTACHMENT_SIZE_LIMIT) {
+      return attachment;
+    }
+
+    throw new Error(
+      `${attachment.name} is too large for browser local storage. Please use a browser with IndexedDB enabled or upload a smaller file.`,
+    );
+  }
+
+  await writeAttachmentPayload(storageKey, attachment.dataUrl, attachment.mimeType);
+
+  return {
+    ...attachment,
+    storageKey,
+    dataUrl: null,
+  } satisfies AcademicAttachment;
+}
+
 async function fileToAttachment(file: File) {
-  return createAttachment(
+  const attachment = createAttachment(
     file.name,
     formatBytes(file.size),
     detectFileTypeLabel(file),
     file.type || "application/octet-stream",
     await readFileAsDataUrl(file),
   );
+
+  return moveAttachmentPayloadOutOfLocalStorage(attachment);
 }
 
 function createHtmlDataUrl(content: string) {
@@ -312,6 +470,26 @@ function createReportCardPreview(
   );
 }
 
+async function createStoredReportCardPreview(
+  studentName: string,
+  branch: string,
+  semester: string,
+  performanceLabel: string,
+  totalInternalScore: number,
+  remarks: string,
+) {
+  const attachment = createReportCardPreview(
+    studentName,
+    branch,
+    semester,
+    performanceLabel,
+    totalInternalScore,
+    remarks,
+  );
+
+  return moveAttachmentPayloadOutOfLocalStorage(attachment);
+}
+
 function normalizeStore(
   store?: Partial<AcademicControlStore> | null,
 ): AcademicControlStore {
@@ -322,6 +500,8 @@ function normalizeStore(
     typeLabel: attachment.typeLabel ?? "FILE",
     mimeType: attachment.mimeType ?? "application/octet-stream",
     dataUrl: typeof attachment.dataUrl === "string" ? attachment.dataUrl : null,
+    storageKey:
+      typeof attachment.storageKey === "string" ? attachment.storageKey : null,
     uploadedAt: attachment.uploadedAt ?? new Date().toISOString(),
   });
 
@@ -348,14 +528,117 @@ function normalizeStore(
   };
 }
 
+function sanitizeAttachmentForPersistence(attachment: AcademicAttachment) {
+  if (!attachment.storageKey) {
+    return attachment;
+  }
+
+  return {
+    ...attachment,
+    dataUrl: null,
+  } satisfies AcademicAttachment;
+}
+
+function sanitizeStoreForPersistence(store: AcademicControlStore) {
+  return {
+    ...store,
+    feed: store.feed.map((item) => ({
+      ...item,
+      attachments: item.attachments.map(sanitizeAttachmentForPersistence),
+    })),
+    reportCards: store.reportCards.map((reportCard) => ({
+      ...reportCard,
+      attachment: sanitizeAttachmentForPersistence(reportCard.attachment),
+    })),
+  } satisfies AcademicControlStore;
+}
+
+function isQuotaExceeded(error: unknown) {
+  return (
+    error instanceof DOMException &&
+    (error.name === "QuotaExceededError" ||
+      error.name === "NS_ERROR_DOM_QUOTA_REACHED")
+  );
+}
+
+function collectStoreAttachments(store: AcademicControlStore) {
+  return [
+    ...store.feed.flatMap((item) => item.attachments),
+    ...store.reportCards.map((reportCard) => reportCard.attachment),
+  ];
+}
+
+async function migrateInlineAttachmentPayloads(store: AcademicControlStore) {
+  if (!canUseIndexedDb()) {
+    return;
+  }
+
+  const inlineAttachments = collectStoreAttachments(store).filter(
+    (attachment) => attachment.dataUrl && !attachment.storageKey,
+  );
+
+  if (inlineAttachments.length === 0) {
+    return;
+  }
+
+  const migratedIds = new Set<string>();
+
+  for (const attachment of inlineAttachments) {
+    if (migratedIds.has(attachment.id) || !attachment.dataUrl) {
+      continue;
+    }
+
+    await writeAttachmentPayload(
+      attachment.id,
+      attachment.dataUrl,
+      attachment.mimeType,
+    );
+    migratedIds.add(attachment.id);
+  }
+
+  const migrateAttachment = (attachment: AcademicAttachment) =>
+    migratedIds.has(attachment.id)
+      ? ({
+          ...attachment,
+          storageKey: attachment.id,
+          dataUrl: null,
+        } satisfies AcademicAttachment)
+      : attachment;
+
+  persistStore({
+    ...store,
+    feed: store.feed.map((item) => ({
+      ...item,
+      attachments: item.attachments.map(migrateAttachment),
+    })),
+    reportCards: store.reportCards.map((reportCard) => ({
+      ...reportCard,
+      attachment: migrateAttachment(reportCard.attachment),
+    })),
+  });
+}
+
 function persistStore(store: AcademicControlStore) {
   if (!isBrowser()) {
     return store;
   }
 
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+  const sanitized = sanitizeStoreForPersistence(store);
+
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitized));
+  } catch (error) {
+    if (isQuotaExceeded(error)) {
+      throw new Error(
+        "Academic Control storage is full. Large uploaded files are now stored outside localStorage, so please retry this action once.",
+      );
+    }
+
+    throw error;
+  }
+
   window.dispatchEvent(new Event(STORE_EVENT));
-  return store;
+  return sanitized;
 }
 
 function updateStore(
@@ -419,12 +702,38 @@ export function getAcademicControlStore() {
     const parsed = JSON.parse(raw) as Partial<AcademicControlStore>;
     const normalized = normalizeStore(parsed);
     if (JSON.stringify(parsed) !== JSON.stringify(normalized)) {
-      persistStore(normalized);
+      try {
+        persistStore(normalized);
+      } catch (error) {
+        console.warn("Unable to normalize the academic control store.", error);
+      }
     }
+    void migrateInlineAttachmentPayloads(normalized).catch((error) => {
+      console.warn("Unable to migrate academic attachment payloads.", error);
+    });
     return normalized;
   } catch {
     persistStore(DEFAULT_STORE);
     return DEFAULT_STORE;
+  }
+}
+
+export async function resolveAcademicAttachmentUrl(
+  attachment: AcademicAttachment,
+) {
+  if (attachment.dataUrl) {
+    return attachment.dataUrl;
+  }
+
+  if (!attachment.storageKey) {
+    return null;
+  }
+
+  try {
+    return await readAttachmentPayload(attachment.storageKey);
+  } catch (error) {
+    console.warn("Unable to resolve academic attachment URL.", error);
+    return null;
   }
 }
 
@@ -593,7 +902,7 @@ export function saveInternalMarks(input: SaveMarksInput) {
   return records;
 }
 
-export function generateReportCard(input: SaveReportCardInput) {
+export async function generateReportCard(input: SaveReportCardInput) {
   const current = getAcademicControlStore();
   const totalInternalScore = getTotalInternalScore(
     current.marks,
@@ -602,7 +911,7 @@ export function generateReportCard(input: SaveReportCardInput) {
     input.semester,
   );
   const performanceLabel = getPerformanceLabel(totalInternalScore);
-  const attachment = createReportCardPreview(
+  const attachment = await createStoredReportCardPreview(
     input.studentName,
     input.branch,
     input.semester,
@@ -715,6 +1024,25 @@ export function deleteAcademicFeedItem(itemId: string) {
     return false;
   }
 
+  const storageKeysToDelete = new Set<string>();
+  for (const attachment of item.attachments) {
+    if (attachment.storageKey) {
+      storageKeysToDelete.add(attachment.storageKey);
+    }
+  }
+  if (item.category === "Generate Report Cards") {
+    for (const reportCard of current.reportCards) {
+      if (
+        reportCard.studentName === item.targetStudent &&
+        reportCard.branch === item.branch &&
+        reportCard.semester === item.semester &&
+        reportCard.attachment.storageKey
+      ) {
+        storageKeysToDelete.add(reportCard.attachment.storageKey);
+      }
+    }
+  }
+
   persistStore({
     ...current,
     feed: current.feed.filter((entry) => entry.id !== itemId),
@@ -753,6 +1081,16 @@ export function deleteAcademicFeedItem(itemId: string) {
           )
         : current.exams,
   });
+
+  if (storageKeysToDelete.size > 0) {
+    void Promise.all(
+      Array.from(storageKeysToDelete).map((storageKey) =>
+        deleteAttachmentPayload(storageKey),
+      ),
+    ).catch((error) => {
+      console.warn("Unable to clean up deleted academic attachments.", error);
+    });
+  }
 
   return true;
 }
