@@ -11,6 +11,33 @@ export interface SecurityEvent {
   network: string;
 }
 
+export interface SecurityProtectionStatus {
+  key: string;
+  label: string;
+  enabled: boolean;
+  detail: string;
+}
+
+export interface BlockedRequestLog {
+  id: string;
+  path: string;
+  reason: string;
+  method: string;
+  timestamp: string;
+}
+
+export interface SecurityStatusSnapshot {
+  ok: boolean;
+  sharedDatabase: boolean;
+  bodySizeLimitBytes: number;
+  writeLimitPerWindow: number;
+  writeRateLimitWindowSeconds: number;
+  blockedRequests: number;
+  protections: SecurityProtectionStatus[];
+  recentBlockedRequests: BlockedRequestLog[];
+  recentEdgeEvents: SecurityEvent[];
+}
+
 const SECURITY_EVENTS_KEY = "nirgrantha.security.events";
 const MAX_EVENTS = 40;
 
@@ -62,6 +89,17 @@ async function tryWriteSharedEvent(event: SecurityEvent) {
   }
 }
 
+export async function fetchSecurityStatus(): Promise<SecurityStatusSnapshot | null> {
+  try {
+    const response = await fetch("/api/security-status");
+    if (!response.ok) return null;
+    const data = (await response.json()) as SecurityStatusSnapshot;
+    return data.ok ? data : null;
+  } catch {
+    return null;
+  }
+}
+
 function getDeviceLabel(): string {
   if (typeof navigator === "undefined") {
     return "Browser session";
@@ -108,7 +146,10 @@ export function recordSecurityEvent(input: {
   source?: string;
 }) {
   const event: SecurityEvent = {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    id:
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     action: input.action,
     details: input.details,
     severity: input.severity ?? "SAFE",

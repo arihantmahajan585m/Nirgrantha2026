@@ -1,7 +1,7 @@
 {
   "name": "nirgrantha585",
   "main": "src/worker/index.ts",
-  "compatibility_date": "2026-04-07",
+  "compatibility_date": "2026-04-14",
   "assets": {
     "binding": "ASSETS",
     "directory": "./src/frontend/dist",
