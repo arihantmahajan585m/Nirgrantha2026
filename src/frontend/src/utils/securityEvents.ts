@@ -36,6 +36,32 @@ function writeEvents(events: SecurityEvent[]) {
   window.localStorage.setItem(SECURITY_EVENTS_KEY, JSON.stringify(events));
 }
 
+async function tryReadSharedEvents(): Promise<SecurityEvent[] | null> {
+  try {
+    const response = await fetch("/api/security-events");
+    if (!response.ok) return null;
+    const data = (await response.json()) as {
+      ok?: boolean;
+      events?: SecurityEvent[];
+    };
+    return data.ok && Array.isArray(data.events) ? data.events : null;
+  } catch {
+    return null;
+  }
+}
+
+async function tryWriteSharedEvent(event: SecurityEvent) {
+  try {
+    await fetch("/api/security-events", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ event }),
+    });
+  } catch {
+    // Keep local events as the fallback when the shared backend is unavailable.
+  }
+}
+
 function getDeviceLabel(): string {
   if (typeof navigator === "undefined") {
     return "Browser session";
@@ -68,6 +94,13 @@ export function listSecurityEvents(): SecurityEvent[] {
   return readEvents();
 }
 
+export async function syncSecurityEvents(): Promise<SecurityEvent[]> {
+  const sharedEvents = await tryReadSharedEvents();
+  if (!sharedEvents) return readEvents();
+  writeEvents(sharedEvents);
+  return sharedEvents;
+}
+
 export function recordSecurityEvent(input: {
   action: string;
   details: string;
@@ -87,6 +120,7 @@ export function recordSecurityEvent(input: {
 
   const next = [event, ...readEvents()].slice(0, MAX_EVENTS);
   writeEvents(next);
+  void tryWriteSharedEvent(event);
   return event;
 }
 

@@ -4,6 +4,7 @@ import {
   type CreateActorOptions,
   ExternalBlob,
 } from "./backend";
+import { createCloudflareBackendActor } from "./utils/cloudflareBackend";
 import { StorageClient } from "./utils/StorageClient";
 import { HttpAgent } from "@icp-sdk/core/agent";
 
@@ -121,6 +122,11 @@ async function maybeLoadMockBackend(
 export async function createActorWithConfig(
   options?: CreateActorOptions,
 ): Promise<backendInterface> {
+  const cloudflareBackend = await createCloudflareBackendActor();
+  if (cloudflareBackend) {
+    return cloudflareBackend;
+  }
+
   // Attempt to load mock backend if enabled
   const mock = await maybeLoadMockBackend();
   if (mock) {

@@ -24,6 +24,8 @@ import {
   formatSecurityEventTime,
   listSecurityEvents,
   recordSecurityEvent,
+  syncSecurityEvents,
+  type SecurityEvent,
 } from "../../../utils/securityEvents";
 
 type CyberTab = "overview" | "checklist" | "tips" | "sessions";
@@ -152,18 +154,28 @@ export default function CybersecurityCommand() {
   const [activeTab, setActiveTab] = useState<CyberTab>("overview");
   const [checked, setChecked] = useState<number[]>(() => readNumbers(CHECKLIST_STORAGE_KEY, DEFAULT_CHECKED));
   const [dismissedAlerts, setDismissedAlerts] = useState<string[]>(() => readStrings(DISMISSED_ALERTS_STORAGE_KEY));
+  const [events, setEvents] = useState<SecurityEvent[]>(() => listSecurityEvents());
   const { currentRole } = useAuth();
   const students = useListAllStudents().data ?? [];
   const teachers = useListAllTeachers().data ?? [];
-  const events = listSecurityEvents();
 
   useEffect(() => writeJSON(CHECKLIST_STORAGE_KEY, checked), [checked]);
   useEffect(() => writeJSON(DISMISSED_ALERTS_STORAGE_KEY, dismissedAlerts), [dismissedAlerts]);
   useEffect(() => {
+    let cancelled = false;
+    syncSecurityEvents().then((syncedEvents) => {
+      if (!cancelled) setEvents(syncedEvents);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  useEffect(() => {
     if (typeof window === "undefined") return;
     const sessionKey = `nirgrantha.cyber.session.${currentRole ?? "guest"}`;
     if (window.sessionStorage.getItem(sessionKey)) return;
-    recordSecurityEvent({ action: "Institute security session active", details: `Cybersecurity Command opened for the ${currentRole ?? "guest"} role.`, severity: "SAFE", source: "session" });
+    const event = recordSecurityEvent({ action: "Institute security session active", details: `Cybersecurity Command opened for the ${currentRole ?? "guest"} role.`, severity: "SAFE", source: "session" });
+    setEvents((previous) => [event, ...previous].slice(0, 40));
     window.sessionStorage.setItem(sessionKey, "1");
   }, [currentRole]);
 
@@ -187,7 +199,8 @@ export default function CybersecurityCommand() {
     const alreadyChecked = checked.includes(item.id);
     const next = alreadyChecked ? checked.filter((value) => value !== item.id) : [...checked, item.id];
     setChecked(next);
-    recordSecurityEvent({ action: "Cybersecurity checklist updated", details: `${alreadyChecked ? "Marked incomplete" : "Marked complete"}: ${item.text}`, severity: "SAFE", source: "cybersecurity" });
+    const event = recordSecurityEvent({ action: "Cybersecurity checklist updated", details: `${alreadyChecked ? "Marked incomplete" : "Marked complete"}: ${item.text}`, severity: "SAFE", source: "cybersecurity" });
+    setEvents((previous) => [event, ...previous].slice(0, 40));
   }
 
   return (
