@@ -239,7 +239,16 @@ export default function CybersecurityCommand() {
   if (blockedEdgeRequests > 0) alerts.push({ id: "blocked-attacks", level: "LOW", title: "Edge shield is actively blocking hostile probes", desc: `${blockedEdgeRequests} suspicious request(s) have already been intercepted at the Cloudflare edge.`, color: "#059669", bg: "#ecfdf5", border: "#86efac" });
   if (alerts.length === 0) alerts.push({ id: "posture-good", level: "LOW", title: "Live posture looks healthy", desc: "No active security gaps were inferred from the current roster, checklist state, or recent session activity.", color: "#059669", bg: "#ecfdf5", border: "#86efac" });
   const visibleAlerts = alerts.filter((alert) => !dismissedAlerts.includes(alert.id));
-  const score = Math.max(25, Math.min(100, Math.round((checked.length / CHECKLIST_ITEMS.length) * 55 + (secureOrigin ? 8 : 0) + (checked.includes(1) ? 8 : 0) + (checked.includes(3) ? 8 : 0) + edgeProtectionCount * 3 + (blockedEdgeRequests > 0 ? 4 : 0) - alerts.filter((alert) => alert.level === "HIGH").length * 14 - alerts.filter((alert) => alert.level === "MEDIUM").length * 8 - reviewEvents.length * 2)));
+  const criticalAlertCount = alerts.filter((alert) => alert.level === "HIGH" || alert.level === "MEDIUM").length;
+  const totalEdgeProtections = securityStatus?.protections.length ?? 0;
+  const allEdgeProtectionsActive =
+    Boolean(securityStatus?.sharedDatabase) &&
+    totalEdgeProtections > 0 &&
+    edgeProtectionCount === totalEdgeProtections &&
+    secureOrigin;
+  const score = allEdgeProtectionsActive && criticalAlertCount === 0
+    ? 100
+    : Math.max(40, Math.min(99, Math.round((edgeProtectionCount / Math.max(1, totalEdgeProtections || 7)) * 70 + (secureOrigin ? 10 : 0) + (checked.includes(1) ? 6 : 0) + (checked.includes(3) ? 6 : 0) + (blockedEdgeRequests > 0 ? 6 : 0) - alerts.filter((alert) => alert.level === "HIGH").length * 16 - alerts.filter((alert) => alert.level === "MEDIUM").length * 10)));
 
   function toggleCheck(item: ChecklistItem) {
     const alreadyChecked = checked.includes(item.id);
@@ -281,8 +290,9 @@ export default function CybersecurityCommand() {
             >
               <SecurityGauge score={score} />
               <p className="text-xs text-gray-500 mt-2 text-center max-w-xs">
-                The score now combines checklist hygiene with real Cloudflare edge
-                protections, blocked probe activity, and secure-origin status.
+                The score now reflects live Cloudflare edge protection first.
+                Manual checklist items stay advisory unless they reveal a real
+                high- or medium-risk gap.
               </p>
             </div>
             <div className="grid grid-cols-2 gap-3">
